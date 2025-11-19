@@ -1,0 +1,12 @@
+{
+  "Narrator_male": {
+    "speaker_audio": "voice_prompts/narrator_male.wav",
+    "default_emotion_text": "neutral",
+    "default_emo_alpha": 0.8
+  },
+  "Narrator_female": {
+    "speaker_audio": "voice_prompts/narrator_female.wav",
+    "default_emotion_text": "neutral",
+    "default_emo_alpha": 1.0
+  }
+}
