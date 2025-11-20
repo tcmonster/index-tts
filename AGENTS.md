@@ -19,8 +19,9 @@
 - 初始化逻辑会：  
   1. 加载 `checkpoints/indextts2/config.yaml`；  
   2. 选择 `mps`（若可用）或 CPU；  
-  3. 重载情绪模型目录 `qwen0.6bemo4-merge/`，并使用 `ensure_qwen_chat_template` 给 tokenizer 补上 chat template（解决官方模型缺省模板的问题）。
-- `/tts/batch` 请求体映射到 `BatchRequest -> List[Item]`；每条任务可通过 `role` 查 `roles.json`，也可手动传入 `speaker_audio`/`emotion_*`。若传入 `combine=true`，当前仅返回目标文件名，需要在该分支里追加真实的音频拼接逻辑（建议调用 `ffmpeg` 或 `pydub`），变更后记得更新 `API.md`。
+-  3. 重载情绪模型目录 `qwen0.6bemo4-merge/`，并使用 `ensure_qwen_chat_template` 给 tokenizer 补上 chat template（解决官方模型缺省模板的问题）。  
+-  4. 初始化 `PromptCache`，对角色默认音色/情绪做一次预热（仅编码参考音频，不做推理），提升后续批量调用的命中率。
+- `/tts/batch` 请求体映射到 `BatchRequest -> List[Item]`。服务会先根据 `(speaker_audio, emotion_source)` 对条目分组，再按分组顺序串行推理，确保命中的参考音频不会被频繁清空；推理结果依旧按原请求顺序返回。若传入 `combine=true`，会按原顺序将所有 WAV 直接级联成一个新文件，并把每条明细放在 `details` 字段，方便排查。
 - 如需新增路由、鉴权、队列等扩展，请全部写在 `app.py` 或其同级新模块（例如 `app_utils/`），并通过 `from .app_utils import ...` 的方式引入，避免触碰 `indextts/` 源码。
 
 ### 2.2 `roles.json`
@@ -56,6 +57,12 @@
 | `scripts/test_api.py` | 极简 FastAPI 示例，方便在不加载大模型的情况下验证反向代理、鉴权或部署脚本。 |
 
 可以继续在 `scripts/` 下添加新的诊断或部署脚本，但不要移动或覆盖 `tools/`、`tests/` 等官方目录。
+
+### 2.5 `app_cache.py`
+
+- 维护 `PromptCache`（LRU 缓存），缓存 `IndexTTS2` 的 `cache_spk_*`、`cache_emo_*` 张量，并能在推理前自动注入、推理后捕获，避免重复读取与特征提取。
+- 提供 `build_speaker_cache`/`build_emotion_cache` 用于启动时的角色预热，不会触碰官方源码。
+- 如需调整缓存大小、淘汰策略或扩展新的 prompt 类型，只需在该文件内修改即可。
 
 ## 3. 开发流程
 
@@ -103,7 +110,8 @@
 ## 6. 常见问题
 
 - **QwenEmotion 缺少 chat template**：`app.py` 已在初始化时调用 `ensure_qwen_chat_template`，若仍报错，请确认情绪模型目录完整并清理旧的缓存。
-- **Combine 功能尚未实现**：当前仅返回预期文件名，落地时需要在 `app.py` 中实现真正的音频拼接。
+- **Combine 需要同构 WAV**：服务在最后一步直接串联 WAV 数据，请确保同一批次的采样率、声道和位宽一致；否则 `combine_wav_files` 会抛错并返回 500。
+- **批量交替角色**：请求会先按 `(speaker_audio, emotion_audio|emotion_text)` 分组后再推理，以提高命中率；服务完成后仍按原索引顺序返回，后续合并或下游流程无需改动。
 - **显存/算力不足**：`app.py` 默认优先使用 `mps`，必要时可在 `app.py` 中新增环境变量（如 `FORCE_DEVICE`）的读取逻辑，但仍应放在自定义区域而不是修改 `indextts/infer_v2.py`。
 - **角色未识别**：检查 `roles.json` 是否保存为 UTF-8，文件更新后需要重启服务；可在日志中打印 `ROLES.keys()` 来快速定位。
 

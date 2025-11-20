@@ -8,7 +8,7 @@
 
 1. **依赖安装**：确保已按项目 `README.md` 安装 Python 依赖与 IndexTTS2 权重，可使用 `pip install -e .` 或 `pip install -r requirements.txt`（如提供）。
 2. **模型与资源**：将 IndexTTS2 模型权重置于 `checkpoints/indextts2/`，并确认情绪子模型目录（默认 `qwen0.6bemo4-merge/`）完整。
-3. **音频资源**：在 `voice_prompts/` 中准备角色参考音色，格式为 WAV，采样率与模型一致。
+3. **音频资源**：在 `voice_prompts/` 中准备角色参考音色，格式为 WAV，采样率与模型一致；`roles.json` 中的任何相对路径都会被自动解析为仓库根目录下的文件。
 
 > `app.py` 启动后会自动将 QwenEmotion 的 tokenizer 绑定一个 Jinja 模板 (`chat_template`)，避免 Hugging Face 报 “tokenizer.chat_template 缺失” 的错误，因此无需改动官方 `indextts` 代码。
 
@@ -39,7 +39,8 @@ uvicorn app:app --host 0.0.0.0 --port 8000
   "Narrator_male": {
     "speaker_audio": "voice_prompts/narrator_male.wav",
     "default_emotion_text": "neutral",
-    "default_emo_alpha": 0.8
+    "default_emo_alpha": 0.8,
+    "emotion_audio": "voice_prompts/narrator_male_emotion.wav" // 可选
   },
   "Narrator_female": {
     "speaker_audio": "voice_prompts/narrator_female.wav",
@@ -49,7 +50,7 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 }
 ```
 
-请求中指定 `role` 时，会自动使用对应的 `speaker_audio` 与默认情绪。若未指定角色，需显式提供 `speaker_audio`（自定义音色）。
+请求中指定 `role` 时，会自动使用对应的 `speaker_audio` 与默认情绪（若提供 `emotion_audio`，也会自动带上）。若未指定角色，需显式提供 `speaker_audio`（自定义音色）。
 
 ---
 
@@ -81,17 +82,17 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 
 字段 | 类型 | 必填 | 说明
 ---|---|---|---
-`output_dir` | string | 是 | 输出目录，必须存在且具备写权限。
+`output_dir` | string | 是 | 输出目录，必须存在且具备写权限。相对路径以仓库根目录为基准。
 `items` | array | 是 | 每个元素对应一次语音生成任务。
 `items[].role` | string | 否 | 角色名称。存在角色时可省略 `speaker_audio`。
 `items[].speaker_audio` | string | 条件 | 未指定 `role` 时必填，指向参考音色 WAV。
 `items[].emotion_audio` | string | 否 | 情绪参考音频，优先级高于 `emotion_text`。
-`items[].emotion_text` | string | 否 | 情绪文字提示（如 `neutral`、`happy` 等）。
+`items[].emotion_text` | string | 否 | 情绪文字提示（如 `neutral`、`happy` 等）。服务会缓存同一文本对应的情绪向量，重复请求不会再次调用 Qwen。
 `items[].text` | string | 是 | 要合成的文本。
 `items[].duration_tokens` | int | 否 | 控制时长的 token 数。
 `items[].emo_alpha` | float | 否 | 情绪强度，默认 1.0。
 `items[].output_filename` | string | 否 | 指定输出文件名，默认使用时间戳+UUID。
-`combine` | bool | 否 | 若为 `true`，所有结果合并成单一音频并返回 `merged_file`。
+`combine` | bool | 否 | 若为 `true`，所有结果按原请求顺序合并成单一音频并返回 `merged_file`。注意所有 WAV 的采样率/声道/位宽必须一致。
 
 #### 4.2 响应结构
 
@@ -197,6 +198,8 @@ curl -X POST "http://127.0.0.1:8000/tts/batch" \
 - **输出目录不存在**：接口会直接报 400。请预先创建 `output_dir` 指定的文件夹。
 - **角色找不到**：返回 400。确认 `roles.json` 中存在该角色且服务已重启以加载新配置。
 - **情绪提示报错**：`app.py` 已在启动时自动修复 QwenEmotion 的 `chat_template`，若仍报错请检查 `checkpoints/indextts2/qwen0.6bemo4-merge/` 是否完整。
+- **首批请求略慢**：服务启动后会对全部角色做一次音色/情绪预热；若提示文件较大，第一次请求可能需要等待几秒。完成后同一提示会命中缓存。
+- **批量交替角色**：后端会按 `(speaker_audio, emotion_audio|emotion_text)` 分组，分组内连续推理以避免频繁释放缓存，但最终返回（以及合并顺序）仍与原请求一致。
 - **文本过长**：建议客户端自行分段再批量请求，避免显存不足或耗时过长。
 - **文件权限**：确保服务进程对 `output_dir` 拥有写权限，尤其在 Docker 或远程主机上部署时。
 
